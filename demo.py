@@ -131,7 +131,8 @@ def main(args):
         
         # the number of tracked person
         # set N=2 for 2 person interactive videos
-        N = -1
+        # N = -1
+        N = 2
         
         # https://github.com/open-mmlab/mmtracking/tree/master/configs/mot/bytetrack
         mot_config = './mmtracking/configs/mot/bytetrack/bytetrack_yolox_x_crowdhuman_mot17-private.py'
@@ -144,41 +145,73 @@ def main(args):
         # [frame_id, x1, y1, x2, y2, conf_score, nms_threshold, person_id]
         detection_all = []
         
-        # mmtracking procedure
-        imgs = mmcv.VideoReader(args.input_path)
-        prog_bar = mmcv.ProgressBar(len(imgs))
+        if args.input_type == "folder":
+            for i, img_path in enumerate(img_path_list):
+                img = mmcv.imread(img_path)
+                result = inference_mot(mot_model, img, frame_id=i)
 
-        for i, img in enumerate(imgs):
+                track_masks = result.get('track_masks', None)
+                track_bboxes = result.get('track_bboxes', None)
+                outs_track = results2outs(bbox_results=track_bboxes,
+                                        mask_results=track_masks,
+                                        mask_shape=img.shape[:2])
+                
+                ids = outs_track.get('ids', None)
+                bboxes = outs_track.get('bboxes', None)
+                
+                # make id starting from 0 in order
+                ids, bboxes = (list(t) for t in zip(*sorted(zip(ids, bboxes))))
+                
+                # for convinience, just keep the bbox with the highest conf for each person
+                existed_ids = []
+                for j in range(len(bboxes)):
+                    if ids[j] in existed_ids:
+                        continue
+                    if N != -1 and ids[j] > N: # here should be >= N
+                        continue
+                    x1, y1, x2, y2, score = bboxes[j]
+                    # if score < 0.2:
+                    #     continue
+                    detection_all.append([i, x1, y1, x2, y2, score, 0.99, ids[j]])
+                    existed_ids.append(ids[j])
             
-            result = inference_mot(mot_model, img, frame_id=i)
+            # list to array
+            detection_all = np.array(detection_all)
+        elif args.input_type == "video":
+            # mmtracking procedure
+            imgs = mmcv.VideoReader(args.input_path)
+            prog_bar = mmcv.ProgressBar(len(imgs))
+            for i, img in enumerate(imgs):
+                
+                result = inference_mot(mot_model, img, frame_id=i)
 
-            track_masks = result.get('track_masks', None)
-            track_bboxes = result.get('track_bboxes', None)
-            outs_track = results2outs(bbox_results=track_bboxes,
-                                      mask_results=track_masks,
-                                      mask_shape=img.shape[:2])
+                track_masks = result.get('track_masks', None)
+                track_bboxes = result.get('track_bboxes', None)
+                outs_track = results2outs(bbox_results=track_bboxes,
+                                        mask_results=track_masks,
+                                        mask_shape=img.shape[:2])
+                
+                ids = outs_track.get('ids', None)
+                bboxes = outs_track.get('bboxes', None)
+                
+                # make id starting from 0 in order
+                ids, bboxes = (list(t) for t in zip(*sorted(zip(ids, bboxes))))
+                
+                # for convinience, just keep the bbox with the highest conf for each person
+                existed_ids = []
+                for j in range(len(bboxes)):
+                    if ids[j] in existed_ids:
+                        continue
+                    if N != -1 and ids[j] > N:
+                        continue
+                    x1, y1, x2, y2, score = bboxes[j]
+                    if score < 0.5:
+                        continue
+                    detection_all.append([i, x1, y1, x2, y2, score, 0.99, ids[j]])
+                    existed_ids.append(ids[j])
             
-            ids = outs_track.get('ids', None)
-            bboxes = outs_track.get('bboxes', None)
-            
-            # make id starting from 0 in order
-            ids, bboxes = (list(t) for t in zip(*sorted(zip(ids, bboxes))))
-            
-            # for convinience, just keep the bbox with the highest conf for each person
-            existed_ids = []
-            for j in range(len(bboxes)):
-                if ids[j] in existed_ids:
-                    continue
-                if N != -1 and ids[j] > N:
-                    continue
-                x1, y1, x2, y2, score = bboxes[j]
-                if score < 0.5:
-                    continue
-                detection_all.append([i, x1, y1, x2, y2, score, 0.99, ids[j]])
-                existed_ids.append(ids[j])
-        
-        # list to array
-        detection_all = np.array(detection_all)
+            # list to array
+            detection_all = np.array(detection_all)
     
     # single-person
     else:
@@ -230,16 +263,18 @@ def main(args):
         smpl_trans = []
         smpl_joints = []
         cam_focal_l = []
+        smpl_2d_kpts = []
 
     mocap_db = MocapDataset(orig_img_bgr_all, detection_all)
     mocap_data_loader = DataLoader(mocap_db, batch_size=min(args.batch_size, len(detection_all)), num_workers=0)
-    for batch in tqdm(mocap_data_loader):
+    for vis_id, batch in enumerate(tqdm(mocap_data_loader)):
         norm_img = batch["norm_img"].to(device).float()
         center = batch["center"].to(device).float()
         scale = batch["scale"].to(device).float()
         img_h = batch["img_h"].to(device).float()
         img_w = batch["img_w"].to(device).float()
         focal_length = batch["focal_length"].to(device).float()
+        img_bgr = batch["img_bgr"]
 
         cx, cy, b = center[:, 0], center[:, 1], scale * 200
         bbox_info = torch.stack([cx - img_w / 2., cy - img_h / 2., b], dim=-1)
@@ -268,6 +303,7 @@ def main(args):
             cv2.circle(img, (int(px), int(py)), 1, [255, 128, 0], 2)
         cv2.imwrite("front_view_kpt.jpg", img)
         '''
+
         pred_keypoints3d = pred_output.joints[:,:24,:]
         camera_center = torch.hstack((img_w[:,None], img_h[:,None])) / 2
         pred_keypoints2d = perspective_projection(
@@ -276,6 +312,13 @@ def main(args):
                 translation=pred_cam_full,
                 focal_length=focal_length,
                 camera_center=camera_center)
+        
+        # import pdb;pdb.set_trace()
+        output_img = np.array(img_bgr[0])
+        if vis_id == 0:
+            for index, (px, py) in enumerate(pred_keypoints2d[0]):
+                cv2.circle(output_img, (int(px), int(py)), 1, [255, 128, 0], 2)
+            cv2.imwrite("front_view_kpt.jpg", output_img)
         
         if args.save_results:
             # default pose_format is rotation matrix instead of axis-angle
@@ -292,6 +335,7 @@ def main(args):
             smpl_trans.extend(pred_cam_full.cpu().numpy())
             smpl_joints.extend(pred_output.joints.cpu().numpy())
             cam_focal_l.extend(focal_length.cpu().numpy())
+            smpl_2d_kpts.extend(pred_keypoints2d.cpu().numpy())
 
     if args.infill:
         print("Do motion interpolation.")
@@ -302,6 +346,7 @@ def main(args):
         smpl_joints_fill = np.copy(smpl_joints)
         smpl_vertices_fill = np.copy(pred_vert_arr)
         detection_all_fill = np.copy(detection_all)
+        smpl_2d_kpts_fill = np.copy(smpl_2d_kpts)
         
         # person number, only support infill for 1 or 2 persons now
         person_count = len(set(detection_all[:,-1]))
@@ -313,7 +358,8 @@ def main(args):
             choose_index = []
             choose_joints = []
             choose_vertices = []
-            
+            choose_2d_kpts = []
+
             for i in range(len(detection_all)):
                 frame_id = detection_all[i][0]
                 person_id = detection_all[i][-1]
@@ -322,7 +368,9 @@ def main(args):
                     choose_index.append(len(choose_index))
                     choose_joints.append(smpl_joints[i])
                     choose_vertices.append(pred_vert_arr[i])
+                    choose_2d_kpts.append(smpl_2d_kpts[i])
             
+            # import pdb;pdb.set_trace()
             if len(choose_frame) < 3:
                 continue
             
@@ -330,19 +378,22 @@ def main(args):
             existed_list = copy.copy(choose_frame)
             
             # chosen frame ids with interval
-            interval = 10
+            interval = 1
             choose_frame = choose_frame[0::interval]
             choose_index = choose_index[0::interval]
             
             # stack results
             choose_joints = np.stack(choose_joints, axis=0) # (N, J_NUM, 3)
             choose_vertices = np.stack(choose_vertices, axis=0) # (N, V_NUM, 3)
+            choose_2d_kpts = np.stack(choose_2d_kpts, axis=0) # (N, J_NUM, 2)
             
             # linear interpolation
             choose_joints = interp1d(choose_frame, choose_joints[np.array(choose_index), :, :].transpose(1, 2, 0), 
                          kind='linear')(range(int(min(choose_frame)), int(max(choose_frame)))).transpose(2, 0, 1)    
             choose_vertices = interp1d(choose_frame, choose_vertices[np.array(choose_index), :, :].transpose(1, 2, 0), 
                                  kind='linear')(range(int(min(choose_frame)), int(max(choose_frame)))).transpose(2, 0, 1)
+            choose_2d_kpts = interp1d(choose_frame, choose_2d_kpts[np.array(choose_index), :, :].transpose(1, 2, 0),
+                                    kind='linear')(range(int(min(choose_frame)), int(max(choose_frame)))).transpose(2, 0, 1)
             
             if args.smooth:
                 # limit memory, only smooth smpl joints
@@ -427,10 +478,15 @@ def main(args):
                 detection_all_fill_item = np.array([infill_frame_id, 0, 0, 0, 0, 0, 0, person])
                 detection_all_fill_item = detection_all_fill_item[np.newaxis, :]
                 detection_all_fill = np.append(detection_all_fill, detection_all_fill_item, axis=0)
+
+                smpl_2d_kpts_fill_item = choose_2d_kpts[infill_seq.index(infill_frame_id)]
+                smpl_2d_kpts_fill_item = smpl_2d_kpts_fill_item[np.newaxis, :]
+                smpl_2d_kpts_fill = np.append(smpl_2d_kpts_fill, smpl_2d_kpts_fill_item, axis=0)
    
         smpl_joints = smpl_joints_fill
         pred_vert_arr = smpl_vertices_fill
         detection_all = detection_all_fill
+        smpl_2d_kpts = smpl_2d_kpts_fill
 
     if args.save_results:
         if args.infill:
@@ -439,7 +495,7 @@ def main(args):
         np.savez(result_filepath, imgname=img_path_list,
                  pose=smpl_pose, shape=smpl_betas, global_t=smpl_trans,
                  pred_joints=smpl_joints, focal_l=cam_focal_l,
-                 detection_all=detection_all)
+                 detection_all=detection_all, verts=pred_vert_arr, kpts=smpl_2d_kpts)
 
     print("--------------------------- Visualization ---------------------------")
     # make the output directory

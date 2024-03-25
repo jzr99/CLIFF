@@ -45,4 +45,5 @@ class MocapDataset(Dataset):
         item["img_h"] = img_h
         item["img_w"] = img_w
         item["focal_length"] = focal_length
+        item["img_bgr"] = img_bgr
         return item

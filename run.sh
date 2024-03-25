@@ -16,3 +16,5 @@ python demo.py --ckpt ${CKPT_PATH} --backbone ${BACKBONE} \
 python demo.py --ckpt ${CKPT_PATH} --backbone ${BACKBONE} \
                --input_path test_samples/62883594000000000102c16c.mp4 --input_type video \
                --multi --infill --smooth --save_results --make_video --frame_rate 30
+
+# python demo.py --ckpt data/ckpt/hr48-PA43.0_MJE69.0_MVE81.2_3dpw.pt                --backbone hr48                --input_path test_samples/pair19_piggyback19_4/                --input_type folder                --multi                --infill                --smooth                --save_results                --make_video                --frame_rate 30
